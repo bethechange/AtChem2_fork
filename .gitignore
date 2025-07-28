@@ -5,3 +5,16 @@ Makefile
 *.gcda
 *.gcno
 *.xml
+env/.venv
+env/renv
+env/.Rprofile
+env/renv.lock
+env/config_template.txt
+.envrc
+atchem-lib
+.gem
+src/dataStructures.o
+tests/model_tests/spec_model_kpp/spec_model_kpp.fac
+isopleth/output/*
+model/configuration/*
+model/output/*
