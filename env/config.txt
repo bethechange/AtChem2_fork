@@ -9,6 +9,10 @@ YUM_PACKAGES=("${DNF_PACKAGES[@]}")                   # RHEL <8 same names
 APT_PACKAGES=(direnv python3 python3-venv lmod r-base r-base-dev build-essential gfortran gcc cmake git wget curl python3 ruby-full numdiff libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libfribidi-dev libpng-dev libtiff5-dev libjpeg-dev)
 PACMAN_PACKAGES=(untested)                                   # untested means not supported by repository developer - use at your own risk
 
+# ── VENV OR CONDA ───────────────────────────────────────────────
+PYTHON_MGR_SELECT=0                               # 0 = VENV, 1 = CONDA; VENV BY DEFAULT; USE CONDA FOR ANY VERSION (ANACONDA, MINICONDA, ETC.)
+CONDA_DIR=""                              # Leave blank for local installation. Set if global conda is used. 
+
 # ── Python packages (pip) ─────────────────────────────────────────
 PYTHON_PACKAGES=(numpy)
 

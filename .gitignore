@@ -1,6 +1,6 @@
 # Ignore the executable, the Makefile, the Python bytecode, and the compiler-generated files
-atchem2
-Makefile
+/atchem2
+/Makefile
 *.pyc
 *.gcda
 *.gcno
@@ -15,6 +15,11 @@ atchem-lib
 .gem
 src/dataStructures.o
 tests/model_tests/spec_model_kpp/spec_model_kpp.fac
+*isopleth/output/*
+*model/configuration/
+*model/output/
+*old*
+env/.conda
 isopleth/output/*
-model/configuration/*
-model/output/*
+*model/configuration*
+*model/output*

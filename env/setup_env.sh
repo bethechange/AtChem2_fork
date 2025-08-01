@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 VENV_DIR="$SCRIPT_DIR/.venv"
+CONDA_DIR="$SCRIPT_DIR/.conda"            # new: local or global conda/mamba environment path
 MODULES_DIR="$SCRIPT_DIR/modules"
 ENVRC_PATH="$REPO_ROOT/.envrc"
 RPROFILE_FILE="$SCRIPT_DIR/.Rprofile"
@@ -36,6 +37,10 @@ OPENHPC_MODULES=()
 # ── Optional interpreter pins (env/config.txt can override) ──────
 PYTHON_VERSION="${PYTHON_VERSION:-}"
 R_VERSION="${R_VERSION:-}"
+
+# ── Manager selectors (overridable in env/config.txt) ────────────
+# 0 = VENV, 1 = CONDA
+PYTHON_MGR_SELECT="${PYTHON_MGR_SELECT:-0}"
 
 # ── External overrides (env/config.txt) ──────────────────────────
 CONFIG_FILE="$SCRIPT_DIR/config.txt"
@@ -83,16 +88,35 @@ if [[ -d "$MODULES_DIR" ]]; then
   IFS=$'\n' read -r -d '' -a LOCAL_MODULES < <(printf '%s\n' "${LOCAL_MODULES[@]}" | sort -u && printf '\0')
 fi
 
+# ── Conda path resolution (supports CONDA_DIR="" → local) ─────────
+if [[ -z "${CONDA_DIR:-}" ]]; then
+  CONDA_ENV_PATH="$SCRIPT_DIR/.conda"
+else
+  CONDA_ENV_PATH="$CONDA_DIR"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────
 join(){ local IFS=" "; echo "$*"; }
+py_mgr_name() { case "${PYTHON_MGR_SELECT:-0}" in 0) echo "VENV";; 1) echo "CONDA";; *) echo "UNKNOWN";; esac; }
+conda_scope() {
+  if [[ "${CONDA_ENV_PATH:-}" == "$SCRIPT_DIR/.conda" ]]; then echo "local"; else echo "global"; fi
+}
+
 echo "-----------------------------------------------------------------"
 echo "env/setup_env.sh will install with $PKG_MGR on $OS_PRETTY"
 printf "  ▸ env folder : %s\n"   "$SCRIPT_DIR"
 printf "  ▸ repo root  : %s\n"   "$REPO_ROOT"
-printf "  ▸ rprofile   : %s\n"   "$RPROFILE_FILE"                   
+printf "  ▸ rprofile   : %s\n"   "$RPROFILE_FILE"
 printf "  ▸ system     : %s\n"   "$(join "${SYS_PACKAGES[@]}")"
+printf "  ▸ python mgr : %s\n"   "$(py_mgr_name)"
+if [[ "${PYTHON_MGR_SELECT:-0}" -eq 1 ]]; then
+  printf "  ▸ conda path : %s (%s)\n" "$CONDA_ENV_PATH" "$(conda_scope)"
+else
+  printf "  ▸ venv path  : %s\n" "$VENV_DIR"
+fi
 printf "  ▸ pip        : %s\n"   "$(join "${PYTHON_PACKAGES[@]}")"
 printf "  ▸ r pkgs     : %s\n"   "$(join "${R_PACKAGES[@]}")"
+printf "  ▸ openhpc    : %s\n"   "$(join "${OPENHPC_MODULES[@]:-(none)}")"
 printf "  ▸ localmod   : %s\n"   "$(join "${LOCAL_MODULES[@]:-(none)}")"
 echo "-----------------------------------------------------------------"
 read -rp "Proceed? [Y/n] " ans; ans=${ans:-y}; [[ $ans =~ ^[Yy]$ ]] || exit 0
@@ -105,6 +129,7 @@ rm -f "$RPROFILE_FILE"
 GITIGNORE_FILE="$REPO_ROOT/.gitignore"
 DEFAULT_IGNORES=(
   "env/.venv"
+  "env/.conda"
   "env/renv"
   "env/.Rprofile"
   "env/renv.lock"
@@ -145,7 +170,11 @@ case "$PKG_MGR" in
     ;;
   pacman)
     sudo pacman -Sy --noconfirm
-    sudo $INSTALL_CMD "${SYS_PACKAGES[@]}"
+    if [[ "${PACMAN_PACKAGES[*]}" == "untested" ]]; then
+      echo "⚠️  pacman is marked untested; skipping system package installation."
+    else
+      sudo $INSTALL_CMD "${PACMAN_PACKAGES[@]}"
+    fi
     ;;
   *)
     echo "❌ Unsupported package manager: $PKG_MGR" >&2
@@ -154,32 +183,90 @@ case "$PKG_MGR" in
 esac
 
 
-# ── 2. Python venv (local) ───────────────────────────────────────
-PY_CMD=${PYTHON_VERSION:+python${PYTHON_VERSION}}
-PY_CMD=${PY_CMD:-python3}
+# ── 2. Python environment (VENV or CONDA) ────────────────────────
 
-#[[ -d "$VENV_DIR" ]] || "$PY_CMD" -m venv "$VENV_DIR"
-# shellcheck source=/dev/null
-#source "$VENV_DIR/bin/activate"
-#pip install --upgrade pip "${PYTHON_PACKAGES[@]}"
+if [[ "${PYTHON_MGR_SELECT:-0}" -eq 0 ]]; then
+  # ----- VENV path (default) -------------------------------------
+  PY_CMD=${PYTHON_VERSION:+python${PYTHON_VERSION}}
+  PY_CMD=${PY_CMD:-python3}
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  if "$PY_CMD" -m venv "$VENV_DIR" 2>/dev/null; then :; else
-    if command -v virtualenv &>/dev/null; then
-      "$PY_CMD" -m virtualenv "$VENV_DIR"
-    else
-      sudo $INSTALL_CMD python3-virtualenv python3-pip || true
-      "$PY_CMD" -m virtualenv "$VENV_DIR"
+  if [[ ! -d "$VENV_DIR" ]]; then
+    if "$PY_CMD" -m venv "$VENV_DIR" 2>/dev/null; then :; else
+      if command -v virtualenv &>/dev/null; then
+        "$PY_CMD" -m virtualenv "$VENV_DIR"
+      else
+        sudo $INSTALL_CMD python3-virtualenv python3-pip || true
+        "$PY_CMD" -m virtualenv "$VENV_DIR"
+      fi
     fi
   fi
-fi
-# shellcheck source=/dev/null
-source "$VENV_DIR/bin/activate"
-if ! command -v pip &>/dev/null; then
-  "$VENV_DIR/bin/python" -m ensurepip --upgrade 2>/dev/null || true
-fi
-pip install --upgrade pip "${PYTHON_PACKAGES[@]}"
 
+  # shellcheck source=/dev/null
+  source "$VENV_DIR/bin/activate"
+  if ! command -v pip &>/dev/null; then
+    "$VENV_DIR/bin/python" -m ensurepip --upgrade 2>/dev/null || true
+  fi
+  pip install --upgrade pip "${PYTHON_PACKAGES[@]}"
+
+else
+# ----- CONDA/MAMBA path ----------------------------------------
+  # PYTHON_VERSION is ignored under Conda (Conda picks Python)
+  if [[ -n "${PYTHON_VERSION:-}" ]]; then
+    echo "ℹ️  PYTHON_VERSION is ignored when PYTHON_MGR_SELECT=1 (Conda)."
+  fi
+
+  # Create only if the target is the local default (env/.conda)
+  is_local_conda=0
+  [[ "$CONDA_ENV_PATH" == "$SCRIPT_DIR/.conda" ]] && is_local_conda=1
+
+  if command -v conda &>/dev/null; then
+    shell_name="$(basename "${SHELL:-bash}")"
+    case "$shell_name" in
+      zsh)  eval "$(conda shell.zsh hook 2>/dev/null)";;
+      fish) eval "$(conda shell.fish hook 2>/dev/null)";;
+      *)    eval "$(conda shell.bash hook 2>/dev/null)";;
+    esac
+
+    if [[ $is_local_conda -eq 1 && ! -d "$CONDA_ENV_PATH" ]]; then
+      conda create -y -p "$CONDA_ENV_PATH" python
+    fi
+
+    if [[ -d "$CONDA_ENV_PATH" ]]; then
+      conda activate "$CONDA_ENV_PATH"
+    else
+      echo "❌  CONDA_DIR points to a non-existent path: $CONDA_ENV_PATH"
+      echo "    Create it (e.g. 'conda create -p $CONDA_ENV_PATH python') or leave CONDA_DIR blank for local."
+      exit 1
+    fi
+
+  elif command -v micromamba &>/dev/null; then
+    # micromamba is shell-agnostic: use POSIX hook
+    eval "$(micromamba shell hook -s posix 2>/dev/null)"
+
+    if [[ $is_local_conda -eq 1 && ! -d "$CONDA_ENV_PATH" ]]; then
+      micromamba create -y -p "$CONDA_ENV_PATH" python
+    fi
+
+    if [[ -d "$CONDA_ENV_PATH" ]]; then
+      micromamba activate -p "$CONDA_ENV_PATH"
+    else
+      echo "❌  CONDA_DIR points to a non-existent path: $CONDA_ENV_PATH"
+      echo "    Create it (e.g. 'micromamba create -p $CONDA_ENV_PATH python') or leave CONDA_DIR blank for local."
+      exit 1
+    fi
+
+  else
+    echo "❌  CONDA selected but neither 'conda' nor 'micromamba' found in PATH." >&2
+    echo "    Install Miniconda/Mambaforge or micromamba, or set PYTHON_MGR_SELECT=0." >&2
+    exit 1
+  fi
+
+  # Use pip from the activated env to install extras
+  if ! command -v pip &>/dev/null; then
+    python -m ensurepip --upgrade 2>/dev/null || true
+  fi
+  pip install --upgrade pip "${PYTHON_PACKAGES[@]}"
+fi
 
 # ── 3. Optional R interpreter via rig ────────────────────────────
 if [[ -n "$R_VERSION" && -x "$(command -v rig)" ]]; then
@@ -310,15 +397,29 @@ fi
 
 # ── 7. Write .envrc -----------------------------------------------
 # Append the static file install location in Bash ------------------
-printf '%s\n' "ROOT_PATH=$REPO_ROOT"    > "$ENVRC_PATH"
-printf '%s\n' "ENV_PATH=$SCRIPT_DIR"    >> "$ENVRC_PATH"
+printf '%s\n' "ROOT_PATH=$REPO_ROOT"   > "$ENVRC_PATH"
+printf '%s\n' "ENV_PATH=$SCRIPT_DIR"   >> "$ENVRC_PATH"
+printf '%s\n' "CONDA_PATH=$CONDA_ENV_PATH" >> "$ENVRC_PATH"
 
 cat >>"$ENVRC_PATH" <<'EOF'
 
 LMOD_IGNORE_CACHE=1
 
-# ─── Python venv ──────────────────────────────────────────────────
-[ -f "$ENV_PATH/.venv/bin/activate" ] && source "$ENV_PATH/.venv/bin/activate"
+# ─── Python env activation (venv or conda/mamba) ──────────────────
+if [ -f "$ENV_PATH/.venv/bin/activate" ]; then
+  . "$ENV_PATH/.venv/bin/activate"
+elif command -v conda >/dev/null 2>&1 && [ -d "$CONDA_PATH" ]; then
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    zsh)  eval "$(conda shell.zsh hook 2>/dev/null)";;
+    fish) eval "$(conda shell.fish hook 2>/dev/null)";;
+    *)    eval "$(conda shell.bash hook 2>/dev/null)";;
+  esac
+  conda activate "$CONDA_PATH" || true
+elif command -v micromamba >/dev/null 2>&1 && [ -d "$CONDA_PATH" ]; then
+  eval "$(micromamba shell hook -s posix 2>/dev/null)"
+  micromamba activate -p "$CONDA_PATH" || true
+fi
 
 # ---- Hard-reset Lmod state in this shell ----
 rm -rf "$HOME/.lmod.d/.cache"
@@ -332,7 +433,7 @@ fi
 
 # ─── Auto-load repo-local modules ─────────────────────────────────
 if command -v module >/dev/null; then
-  module use "$ENV_PATH/modules"
+  [ -d "$ENV_PATH/modules" ] && module use "$ENV_PATH/modules"
 EOF
 
 # Append the module-load lines generated in Bash -------------------
@@ -457,9 +558,14 @@ if command -v direnv &>/dev/null; then
   eval "$(direnv export bash)"
 fi
 command -v Rscript &>/dev/null && echo "    • R      : $(Rscript -e 'cat(R.version$version.string)')"
-echo "    • Python : $(which python)"
+if [[ "${PYTHON_MGR_SELECT:-0}" -eq 0 ]]; then
+  echo "    • Python     : $(which python)  (venv)"
+else
+  echo "    • Python     : $(which python)  (conda @ $CONDA_ENV_PATH)"
+fi
 echo "    • Modulepath : $MODULEPATH"
 echo "    • Modules available:"
 command -v module &>/dev/null && module avail 2>&1 | sed 's/^/      - /'
+echo
 echo "Note that R packages installed with bioconductor may not be installed in the renv library. Check for these and manually move them into renv's library folder if so."
-echo "Note also that dependency folders may grow very large. We recommend excluding .venv and renv subfolders separately from git repositories using .gitignore (env/.venv/*, env/renv/*). Module folders may be excluded as well depending."
+echo "Note also that dependency folders may grow very large. We recommend excluding .venv/.conda and renv subfolders separately from git repositories using .gitignore (env/.venv/*, env/renv/*). Module folders may be excluded as well depending."
